@@ -3,9 +3,7 @@ import json
 import arrow
 from dotenv import load_dotenv
 import td_ameritrade_api as td
-from pyjson import PyJSON
-from strategy.synthetic import SyntheticStrategy, SyntheticTrade
-from brokers.tda_broker import TDAmeritradeBroker
+from .pyjson import PyJSON
 
 
 def connect_to_tda():
@@ -271,8 +269,3 @@ def roll_synthetics(min_delta=0.8, short_leg_close_ask=0.05):
             elif s.single.is_put and contract.delta <= -min_delta:
                 print(f'Ready to roll PUT {tda_symbol} with delta {contract.delta}')
                 roll_to_fifty_delta(broker, orders, s.single)
-
-
-if __name__ == '__main__':
-    # Only run if this is executed as a script
-    roll_synthetics(min_delta=0.65, short_leg_close_ask=0.05)
