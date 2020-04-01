@@ -1,13 +1,34 @@
 import json
 import arrow
 import td_ameritrade_api as td
-from .tda_connect import connect_to_tda
+from .tda_connect import *
 from .pyjson import PyJSON
 
+
+# TODO: Add flags to accept ratios other than 2:1
 def manage_backratios(trigger_pct=2.0, reinvest=True):
 
     # Verify environment variables are set
     broker = connect_to_tda()
+
+    # get all positions and orders.
+    orders = broker.orders()
+    orders = [convert_order_from_td(order) for order in orders]
+    tda_positions = broker.positions()
+    positions = [convert_position_from_td(p) for p in tda_positions]
+    
+    # Look for backratios 
+
+    # For each backratio, if the underlying has moved x% from the current backratio strike, 
+
+    # Then roll those down for profit
+
+    # if reinvest, take profits and order more underlying.
+
+    # if underlying inventory has crossed a threshold for another backratio, place that order
+
+     
+
     # orders = broker.orders()
     # orders = [convert_order_from_td(order) for order in orders]
     # tda_positions = broker.positions()
