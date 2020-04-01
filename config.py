@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 
 client_id = input("Enter your TDA Oauth consumer ID, e.g. ABCDEFGHIJKLM@AMER.OAUTH: ")
-account_id = input("Enter your TDA Oauth secret, usually a short sequence of letters: ")
+account_id = input("Enter the TDA account number to use: ")
 refresh_token = input("Enter your TDA refresh token: ")
 
 # If a .env exists, back it up first.
