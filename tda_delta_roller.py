@@ -191,8 +191,9 @@ def place_roll_order(price, quantity, new_symbol, old_symbol):
         "orderStrategyType": "SINGLE",
         "orderType": "LIMIT",
         "session": "NORMAL",
-        "price": f"{price}",
         "duration": "DAY",
+        "price": f"{price}",
+        "complexOrderStrategyType": "CUSTOM",
         "orderLegCollection": [
             {
             "instrument": {
@@ -210,13 +211,33 @@ def place_roll_order(price, quantity, new_symbol, old_symbol):
             "instruction": "SELL_TO_CLOSE",
             "quantity": quantity
             }
-        ],
-        "complexOrderStrategyType": "CUSTOM",
-        "duration": "DAY",
-        "session": "NORMAL"
+        ]
     }
     # broker.place_custom_order(order)
-    print(f"Entered order to roll:\n{order}")
+    print(f"Entered order to roll:\n{order}\n")
+
+
+def place_close_order(leg):
+    order = {
+        "orderStrategyType": "SINGLE",
+        "orderType": "LIMIT",
+        "session": "NORMAL",
+        "duration": "DAY",
+        "price": f"{leg.marketValue / (100.0 * leg.shortQuantity)}",
+        "orderStrategy": "SINGLE",
+        "orderLegCollection": [
+            {
+                "instruction": "BUY_TO_OPEN",
+                "quantity": leg.shortQuantity,
+                "instrument": {
+                    "assetType": "OPTION",
+                    "symbol": f"{leg.instrument.symbol}"
+                }
+            }
+        ]
+    }
+    # broker.place_custom_order(order)
+    print(f"Entered order to buy-to-close:\n{order}\n")
 
 
 def roll_to_fifty_delta(broker, orders, current_leg):
@@ -228,7 +249,7 @@ def roll_to_fifty_delta(broker, orders, current_leg):
     best_contract = find_contract_closest_to_50_delta(broker, current_leg)
     price = best_contract.ask * 100 * current_leg.longQuantity
     old_price = current_leg.marketValue
-    if price <= old_price:
+    if price >= old_price:
         print(f"Skipping: Roll-to {best_contract.symbol} lower value ${price} than {current_leg.instrument.symbol} market value ${old_price}")
         return
     
@@ -262,6 +283,8 @@ def roll_synthetics(min_delta=0.8, short_leg_close_ask=0.05):
         # The single leg might actually have been bought over multiple rounds.
         rolling_legs = broker.quote(tda_option_symbol)
         for tda_symbol, tda_option in rolling_legs.items():
+
+            # Check for delta roll
             contract = convert_contract_from_td(tda_option)
             if s.single.is_call and contract.delta >= min_delta:
                 print(f'Ready to roll CALL {tda_symbol} with delta {contract.delta}')
@@ -269,3 +292,12 @@ def roll_synthetics(min_delta=0.8, short_leg_close_ask=0.05):
             elif s.single.is_put and contract.delta <= -min_delta:
                 print(f'Ready to roll PUT {tda_symbol} with delta {contract.delta}')
                 roll_to_fifty_delta(broker, orders, s.single)
+
+            # TODO: TEST TEST TEST
+            # Check for early close on the short leg
+            if 0 < s.spread_short.marketValue <= short_leg_close_ask*100*s.spread_short.quantity:
+                print(f"Attempt to close this short leg {s.spread_short.instrument.symbol}")
+                if is_option_order_for_symbol(s.instrument.underlying):
+                    print(f"Skipping: Order open on {s.instrument.underlying}")
+                    continue
+                place_close_order(s.spread_short)
