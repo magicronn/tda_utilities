@@ -1,6 +1,8 @@
 import os
+import arrow
 from dotenv import load_dotenv
 from .pyjson import PyJSON
+import td_ameritrade_api as td
 
 
 def connect_to_tda():
@@ -30,7 +32,7 @@ def decode_tda_symbol(td_sym):
 
 
 def convert_position_from_td(tdp):
-    p = PyJSON(tdp)
+    p = convert_to_pyjson(tdp)
 
     # TODO: If this is an option...
     _, p.expiration, _, p.strike = decode_tda_symbol(p.instrument.symbol)
@@ -42,22 +44,7 @@ def convert_position_from_td(tdp):
     return p
 
 
-def convert_option_from_td(tdo):
-    p = PyJSON(tdo)
-    return p
-
-
-def convert_order_from_td(tdo):
-    p = PyJSON(tdo)
-    return p
-
-
-def convert_chain_from_td(tdo):
-    p = PyJSON(tdo)
-    return p
-
-
-def convert_contract_from_td(tdo):
+def convert_to_pyjson(tdo):
     p = PyJSON(tdo)
     return p
 

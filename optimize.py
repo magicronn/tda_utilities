@@ -5,77 +5,18 @@ from .tda_connect import *
 from .pyjson import PyJSON
 
 
-def identify_synthetic_trade(p):
-    # Synths are 3-legged
-    if len(p) != 3:
-        return None
-
-    # Identify the short and two long legs
-    spread_short = long_leg_1 = long_leg_2 = None
-    single = spread_long = None
-    exp = qty = None  
-    for leg in p:
-        # Validate all legs have the same expiration and quantity
-        if qty is None:
-            qty = abs(leg.quantity)
-            exp = leg.expiration
-        elif qty != abs(leg.quantity) or exp != leg.expiration:
-            return None
-
-        if leg.quantity < 0.0:
-            spread_short = leg
-        elif long_leg_1:
-            long_leg_2 = leg
-        else:
-            long_leg_1 = leg
-
-    # Identify the spread and single
-    if long_leg_1.instrument.putCall == spread_short.instrument.putCall:
-        spread_long = long_leg_1
-        single = long_leg_2
-    elif long_leg_2.instrument.putCall == spread_short.instrument.putCall:
-        spread_long = long_leg_2
-        single = long_leg_1
-    else:
-        # Invalid spread
-        return None
-
-    # Validate the strikes
-    if single.is_call and not (single.strike >= spread_short.strike > spread_long.strike):
-        return None
-    if single.is_put and not (single.strike <= spread_short.strike < spread_long.strike):
-        return None
-
-    # Asset types right?
-    if single.is_call:
-        if not (spread_long.is_put and spread_short.is_put):
-            return None
-    elif single.is_put:
-        if not (spread_long.is_call and spread_short.is_call):
-            return None
-    else:
-        return None
-
-    j = {
-        "single": single,
-        "spread_long": spread_long,
-        "spread_short": spread_short
-    }
-    return PyJSON(j)
-
-
 def is_option_order_for_symbol(underlying, order):
-    # Already closed?
-    if order.closeTime:
+    # Still in queue?
+    if order.status != "QUEUED":
         return False
 
     # Have legs?
     if not order.orderLegCollection:
         return False
 
-    for order_leg in order.orderLegCollection:
-        if order_leg.orderLegType == "OPTION":
-            leg_underlying, _, _, _ = decode_tda_symbol(order_leg.symbol)
+    for x in order.orderLegCollection:
+        if x["orderLegType"] == "OPTION":
+            leg_underlying, _, _, _ = decode_tda_symbol(x["instrument"]["symbol"])
             if leg_underlying == underlying:
                 return True
     return False
@@ -127,7 +68,7 @@ def place_roll_order(price, quantity, new_symbol, old_symbol):
         "orderType": "LIMIT",
         "session": "NORMAL",
         "duration": "DAY",
-        "price": f"{price}",
+        "price": price,
         "complexOrderStrategyType": "CUSTOM",
         "orderLegCollection": [
             {
@@ -183,56 +124,92 @@ def roll_to_fifty_delta(broker, orders, current_leg):
 
     best_contract = find_contract_closest_to_50_delta(broker, current_leg)
     price = best_contract.ask * 100 * current_leg.longQuantity
+    # TODO: marketValue is midpoint of bid-ask spread. Should fetch the current contract for this leg and use that bid.
+    # Acceptable for now since credit will be better than using that bid.
+    # TODO: Add commission to final price
     old_price = current_leg.marketValue
     if price >= old_price:
         print(f"Skipping: Roll-to {best_contract.symbol} lower value ${price} than {current_leg.instrument.symbol} market value ${old_price}")
         return
     
-    place_roll_order(old_price - price, current_leg.longQuantity, current_leg.instrument.symbol, best_contract.symbol)
+    # Price should be negative - this order should generate a credit
+    place_roll_order(price - old_price, current_leg.longQuantity, current_leg.instrument.symbol, best_contract.symbol)
     return
     
 
-def roll_synthetics(min_delta=0.8, short_leg_close_ask=0.05):
-    # Verify environment variables are set
+def optimize_all_positions(min_delta=0.8, short_close_ask=0.05):
+    '''
+    optimize_all_positions iterates over all option and equity positions by underlying and 
+    attempts to reduce risk and extract value. Currently this is limited to rolling longs that have large delta
+    and closing shorts that have small asks. Later work may include rolling positions to the next series
+    for additional time/value.
+    :param legs: Array of contracts with quantities, etc. JSON as defined by TDA.
+    :type legs: object
+    :param min_delta: Minimum delta to roll long legs down to 0.5 delta, taking profits.
+    :type min_delta: float
+    :param short_close_ask: Maximumn price to pay to close a short leg early, minimizing risk.
+    :type short_close_ask: float 
+    '''
     broker = connect_to_tda()
     orders = broker.orders()
-    orders = [convert_order_from_td(order) for order in orders]
-    tda_positions = broker.positions()
-    positions = [convert_position_from_td(p) for p in tda_positions]
-    
-    synths = []
+    orders = [convert_to_pyjson(order) for order in orders]
+    positions = broker.positions()
+    positions = [convert_position_from_td(p) for p in positions]
     positions = group_positions_by_underlying(positions)
     for legs in positions.values():
-        trade = identify_synthetic_trade(legs)
-        if trade:
-            synths.append(trade)
-    
-    if not synths:
-        print("No synthetics to roll.")
-        return
+        close_cheap_shorts(broker, orders, legs, short_close_ask)
+        roll_position_longs(broker, orders, legs, min_delta)
 
-    for s in synths:
-        # Fetch the single leg and get the greek.delta
-        tda_option_symbol = s.single.instrument.symbol
+
+def roll_position_longs(broker, orders, legs, min_delta=0.8):
+    '''
+    roll_long_legs identifies unmatched legs in all trades and attempts to roll them if their delta
+    is above the given minimum.
+    :param broker: TDA instance
+    :param orders: open orders from TDA (to prevent redundant calls)
+    :param legs: Array of contracts with quantities, etc. JSON as defined by TDA.
+    :type legs: object
+    :param min_delta: Minimum delta to roll long legs down to 0.5 delta, taking profits.
+    :type min_delta: float
+    :param short_close_ask: Maximumn price to pay to close a short leg early, minimizing risk.
+    :type short_close_ask: float 
+    '''
+    for leg in legs:
+        # Validate all legs have the same expiration and quantity
+        if leg.quantity > 0:
+            tda_option_symbol = leg.instrument.symbol
         
-        # The single leg might actually have been bought over multiple rounds.
-        rolling_legs = broker.quote(tda_option_symbol)
-        for tda_symbol, tda_option in rolling_legs.items():
+            # The single leg might actually have been bought over multiple rounds.
+            rolling_legs = broker.quote(tda_option_symbol)
+            for tda_symbol, tda_option in rolling_legs.items():
 
-            # Check for delta roll
-            contract = convert_contract_from_td(tda_option)
-            if s.single.is_call and contract.delta >= min_delta:
-                print(f'Ready to roll CALL {tda_symbol} with delta {contract.delta}')
-                roll_to_fifty_delta(broker, orders, s.single)
-            elif s.single.is_put and contract.delta <= -min_delta:
-                print(f'Ready to roll PUT {tda_symbol} with delta {contract.delta}')
-                roll_to_fifty_delta(broker, orders, s.single)
+                # Check for delta for potential roll
+                contract = convert_to_pyjson(tda_option)
+                if leg.is_call and contract.delta >= min_delta:
+                    print(f'Ready to roll CALL {tda_symbol} with delta {contract.delta}')
+                    roll_to_fifty_delta(broker, orders, leg)
+                elif leg.is_put and contract.delta <= -min_delta:
+                    print(f'Ready to roll PUT {tda_symbol} with delta {contract.delta}')
+                    roll_to_fifty_delta(broker, orders, leg)
 
-            # TODO: TEST TEST TEST
-            # Check for early close on the short leg
-            if 0 < s.spread_short.marketValue <= short_leg_close_ask*100*s.spread_short.quantity:
-                print(f"Attempt to close this short leg {s.spread_short.instrument.symbol}")
-                if is_option_order_for_symbol(s.instrument.underlying):
-                    print(f"Skipping: Order open on {s.instrument.underlying}")
-                    continue
-                place_close_order(s.spread_short)
+
+def close_cheap_shorts(broker, orders, legs, short_close_ask):
+    '''
+    close_position_shorts closes any leg with single contract value less than the given ask. Won't 
+    do anything if there are existing orders for the underlying.
+    :param broker: TDA instance
+    :param orders: open orders from TDA (to prevent redundant calls)
+    :param legs: Array of contracts with quantities, etc. JSON as defined by TDA.
+    :type legs: object
+    :param short_close_ask: Maximumn price to pay to close a short leg early, minimizing risk.
+    :type short_close_ask: float 
+    '''
+
+    for leg in legs:
+        # Validate all legs have the same expiration and quantity
+        if 0 < leg.marketValue <= short_close_ask*100*leg.shortQuantity:
+            print(f"Attempt to close this short leg: {leg.instrument.symbol}")
+            if not is_option_order_for_symbol(leg.underlying):
+                place_close_order(leg)
+            else: 
+                print(f"Skipping: Short close order due to open order on {leg.underlying} options")
