@@ -14,4 +14,4 @@ Have Python 3 installed because there is no Python 2.
 3. Get your account ID and refresh token from 
 [TD Ameritrade - Developer Getting Started](https://developer.tdameritrade.com/content/getting-started)
 4. Create your .env file and give your full oauth ID, TDA account number, and refresh token: `python config.py`
-5. Run `python tda.py`
+5. Run `python optimize.py`
